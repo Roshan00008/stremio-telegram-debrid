@@ -1,3 +1,12 @@
+---
+title: Telegram Stremio Addon
+emoji: 🎬
+colorFrom: blue
+colorTo: purple
+sdk: docker
+pinned: false
+---
+
 # Telegram Stremio Addon
 
 ![Telegram Stremio Addon Banner](stremio_telegram_banner.png)

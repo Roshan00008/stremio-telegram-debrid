@@ -268,39 +268,41 @@ Hugging Face Spaces is the recommended hosting platform as it provides fast netw
 
 #### Hugging Face Spaces Setup Guide
 
-1. **Fork this Repository**: 
-   - Click the 'Fork' button at the top-right of this GitHub page to copy it to your own GitHub account.
+The addon can be deployed on Hugging Face Spaces in less than 5 minutes. You can also configure it to **automatically update** whenever new fixes are pushed to GitHub!
 
+1. **Fork this Repository**: 
+   - Click the **Fork** button at the top-right of this GitHub page to copy it to your own GitHub account.
 2. **Create a Hugging Face Account**: 
    - Visit [Hugging Face](https://huggingface.co/) and sign up for a free account.
-
 3. **Create a New Space**: 
-   - Click your profile picture in the top-right and select **New Space** (or go to [huggingface.co/new-space](https://huggingface.co/new-space)).
-   - **Space Name**: Choose a name (for example: 'stremio-telegram-addon').
-   - **Select the Space SDK**: Click **Docker**.
-   - **Template**: Keep it as **Blank**.
-   - Scroll down to **Space Visibility** and make sure it is set to **Public** (required for the free tier).
+   - Go to [huggingface.co/new-space](https://huggingface.co/new-space).
+   - **Space Name**: Choose any name (e.g., 'stremio-telegram-addon').
+   - **Space SDK**: Select **Docker**.
+   - **Template**: Select **Blank**.
+   - **Space Visibility**: Make sure it is set to **Public** (required for the free tier).
    - Click **Create Space** at the bottom.
-
 4. **Upload Your Code to the Space**:
    - Go to your new Space page and click the **Files** tab at the top.
    - Click **+ Add file** > **Upload files**.
    - On your GitHub fork, click the green **Code** button and select **Download ZIP**. Extract the ZIP on your device.
    - Upload all the extracted files into the upload area on Hugging Face. Make sure 'Dockerfile', 'addon.py', 'requirements.txt', and all other project files are uploaded to the root of the Space (not inside a subfolder).
    - Click **Commit changes to main**. Hugging Face will automatically start building and deploying your Space!
-
-   > ** Mobile Users**: This works on your phone too! Download the ZIP from GitHub in your mobile browser, then open your phone's file manager (Files app on iPhone, or any file manager on Android) to extract it. Go back to the Hugging Face upload page in your browser and tap **Upload files** — select the extracted files from your phone storage and upload them.
-
 5. **Configure Environment Secrets**: 
-   - Stay in the **Settings** tab, scroll down to **Variables and secrets**, and click **New secret** to add your settings:
+   - Click the **Settings** tab at the top of your Space page.
+   - Scroll down to **Variables and secrets** and click **New secret** to add your settings:
      - 'API_ID' (from my.telegram.org)
      - 'API_HASH' (from my.telegram.org)
      - 'BOT_TOKEN' (or 'USER_SESSION_STRING')
      - 'TELEGRAM_CHANNEL_ID'
      - 'API_KEY' (a password of your choice to protect your addon link)
      - 'ADDON_URL': Set this to 'https://<your-hf-username>-<your-space-name>.hf.space' (you can find this URL by clicking "Embed this Space" in the top-right of your Space page).
+     - 'AUTO_UPDATE': (Optional) Set to 'true' if you want the Space to automatically download the latest version of the code from GitHub on startup. Set to 'false' or leave it unset to use the static uploaded files.
+     - 'GITHUB_REPO_URL': (Optional) If you set 'AUTO_UPDATE' to 'true' and want to pull from your own custom GitHub fork, enter your fork URL here (e.g., 'https://github.com/yourusername/stremio-telegram-debrid.git').
+6. **How to Update in the Future**:
+   - If you set 'AUTO_UPDATE' to 'true', you never have to re-upload files when new updates are released! Simply go to your Space **Settings** tab and click **Restart Space** (or **Factory Restart**), and it will automatically pull the latest code on startup.
+   - If 'AUTO_UPDATE' is unset or 'false', you will need to manually re-upload updated files to the Space.
 
-Hugging Face will rebuild your Space automatically when you update secrets. Once the status bar at the top turns green and says **Running**, your addon is online!
+Once the status bar at the top turns green and says **Running**, your addon is online!
 
 ### 2. Render
 - **Cost**: Hobby/Free Tier. No credit card required at signup.

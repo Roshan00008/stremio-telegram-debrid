@@ -3,6 +3,7 @@ import logging
 import asyncio
 import functools
 import inspect
+import re
 from hashlib import sha256
 from typing import Callable, Optional, AsyncGenerator, Union
 
@@ -15,6 +16,7 @@ from pyrogram.errors import VolumeLocNotFound, CDNFileHashMismatch
 from pyrogram.crypto import aes
 import pyrogram
 from config import Config
+from utils import parse_split_info
 
 logger = logging.getLogger("tg_client")
 
@@ -451,7 +453,47 @@ class TelegramClientManager:
                 logger.warning(f"Telegram query failed for {chat_id}: {e}")
         
         results.sort(key=lambda m: m.date, reverse=True)
-        final_results = results[:limit]
+        
+        # Resolve all split parts for detected split files to prevent missing segments
+        split_bases = set()
+        for msg in results:
+            media = msg.video or msg.document or msg.audio
+            if media:
+                fn = getattr(media, "file_name", "") or msg.caption or ""
+                base, part = parse_split_info(fn)
+                if base:
+                    # Generate a clean, truncated search query for the split base
+                    search_query = re.sub(r'[^a-zA-Z0-9\s]', ' ', base)
+                    search_query = re.sub(r'\s+', ' ', search_query).strip()
+                    words = search_query.split()
+                    if words and words[-1].lower() in ('mkv', 'mp4', 'avi', 'mov', 'wmv', 'flv', 'webm', 'ts', 'm4v', 'zip'):
+                        words = words[:-1]
+                    if len(words) > 5:
+                        search_query = " ".join(words[:5])
+                    else:
+                        search_query = " ".join(words)
+                    for chat_id in chat_ids:
+                        split_bases.add((chat_id, search_query))
+                        
+        additional_messages = []
+        for chat_id, base in split_bases:
+            try:
+                logger.info(f"Fetching all split parts matching base: {base}")
+                async for msg in self.client.search_messages(chat_id=chat_id, query=base, limit=100):
+                    if self._has_media(msg):
+                        additional_messages.append(msg)
+            except Exception as e:
+                logger.warning(f"Failed to fetch additional split parts for {base}: {e}")
+                
+        # Merge and deduplicate by message ID
+        deduped = {msg.id: msg for msg in results}
+        for msg in additional_messages:
+            deduped[msg.id] = msg
+            
+        final_results = list(deduped.values())
+        final_results.sort(key=lambda m: m.date, reverse=True)
+        final_results = final_results[:limit]
+        
         self._search_cache[cache_key] = (now, final_results)
         return final_results
 

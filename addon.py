@@ -23,7 +23,8 @@ from utils import (
     matches_subtitle,
     get_search_query_from_filename,
     parse_split_info,
-    is_video_file
+    is_video_file,
+    matches_title
 )
 from zip_helper import (
     list_zip_files,
@@ -1108,6 +1109,9 @@ async def stream_handler(
                         media = first_msg.video or first_msg.document or first_msg.audio
                         file_name = getattr(media, "file_name", "") or ""
                         
+                        if not matches_title(base_name, movie_name):
+                            continue
+                            
                         if type == "series" and not matches_episode(file_name, season, episode):
                             continue
                             
@@ -1140,6 +1144,8 @@ async def stream_handler(
                                 logger.error(f"Error checking split ZIP for IMDB: {e}")
                                 
                         if not is_zip:
+                            if not is_video_file(base_name):
+                                continue
                             stream_url = f"{Config.ADDON_URL}/stream/split/{chat_id}/{msg_ids}/{urllib.parse.quote(base_name)}{query_param}"
                             streams.append({
                                 "name": "▶ TG Play (Split)",
@@ -1154,6 +1160,9 @@ async def stream_handler(
                         media = msg.video or msg.document or msg.audio
                         file_name = getattr(media, "file_name", None) or msg.caption or ""
                         
+                        if not matches_title(file_name, movie_name):
+                            continue
+                            
                         if type == "series" and not matches_episode(file_name, season, episode):
                             continue
                             
@@ -1185,6 +1194,8 @@ async def stream_handler(
                                 logger.error(f"Error checking standalone ZIP for IMDB: {e}")
                                 
                         if not is_zip:
+                            if not is_video_file(file_name):
+                                continue
                             stream_url = f"{Config.ADDON_URL}/stream/file/{chat_id}/{msg.id}/{urllib.parse.quote(file_name)}{query_param}"
                             subtitles = await find_subtitles_for_video(file_name, api_key=api_key, cached_messages=tg_results)
                             

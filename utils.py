@@ -1,5 +1,6 @@
 import re
 import logging
+import unicodedata
 import httpx
 
 logger = logging.getLogger("utils")
@@ -176,4 +177,44 @@ VIDEO_EXTENSIONS = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.t
 
 def is_video_file(filename: str) -> bool:
     return filename.lower().endswith(VIDEO_EXTENSIONS)
+
+def normalize_title(title: str) -> str:
+    if not title:
+        return ""
+    # strip accents
+    t = "".join(c for c in unicodedata.normalize('NFD', title) if unicodedata.category(c) != 'Mn')
+    t = t.lower()
+    # Replace non-alphanumeric with space
+    t = re.sub(r'[^a-z0-9\s]', ' ', t)
+    # Convert common roman numerals to digits
+    t = re.sub(r'\bii\b', '2', t)
+    t = re.sub(r'\biii\b', '3', t)
+    t = re.sub(r'\biv\b', '4', t)
+    t = re.sub(r'\bv\b', '5', t)
+    t = re.sub(r'\bvi\b', '6', t)
+    t = re.sub(r'\bvii\b', '7', t)
+    t = re.sub(r'\bviii\b', '8', t)
+    t = re.sub(r'\bix\b', '9', t)
+    t = re.sub(r'\bx\b', '10', t)
+    # Remove extra spaces
+    t = re.sub(r'\s+', ' ', t).strip()
+    return t
+
+def matches_title(filename: str, title: str) -> bool:
+    if not title:
+        return True
+        
+    norm_title = normalize_title(title)
+    norm_fn = normalize_title(filename)
+    
+    if norm_title in norm_fn:
+        return True
+        
+    # Check if all major words of the title are present in the filename
+    words = [w for w in norm_title.split() if w not in ('a', 'an', 'the', 'and', 'or', 'of', 'in', 'to', 'for', 'with')]
+    if not words:
+        words = norm_title.split()
+        
+    return all(word in norm_fn for word in words)
+
 

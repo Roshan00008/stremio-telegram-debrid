@@ -13,9 +13,14 @@ import anyio
 from typing import List, Union
 from pyrogram.types import Message
 
+from cache import BoundedTTLCache
+from config import Config
+
 logger = logging.getLogger("zip_helper")
 
 VIDEO_EXTENSIONS = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.ts', '.m4v')
+BLOCK_CACHE_MAXSIZE = 256
+_zip_listing_cache = BoundedTTLCache(maxsize=100, ttl=Config.CACHE_TTL)
 
 def is_video_file(filename: str) -> bool:
     return filename.lower().endswith(VIDEO_EXTENSIONS)
@@ -42,12 +47,13 @@ class TelegramSeekableReader:
             self.total_size += media.file_size
             
         self.pos = 0
-        self.block_cache = {}
+        self.block_cache = BoundedTTLCache(maxsize=BLOCK_CACHE_MAXSIZE, ttl=Config.CACHE_TTL)
 
     async def fetch_block(self, part_index: int, block_index: int) -> bytes:
         cache_key = (part_index, block_index)
-        if cache_key in self.block_cache:
-            return self.block_cache[cache_key]
+        cached = self.block_cache.get(cache_key)
+        if cached is not None:
+            return cached
             
         part = self.parts[part_index]
         media = part["media"]
@@ -61,7 +67,7 @@ class TelegramSeekableReader:
         except Exception as e:
             logger.error(f"Error fetching block {block_index} for part {part_index}: {e}")
             
-        self.block_cache[cache_key] = block
+        self.block_cache.set(cache_key, block)
         return block
 
     async def read_range(self, start: int, end: int) -> bytes:
@@ -156,17 +162,29 @@ def list_zip_files_sync(reader: TelegramSeekableReader, loop: asyncio.AbstractEv
 
 
 async def list_zip_files(client, messages: Union[Message, List[Message]]) -> list:
-    reader = TelegramSeekableReader(client, messages)
+    msg_list = messages if isinstance(messages, list) else [messages]
+    if not msg_list:
+        return []
+
+    chat_id = msg_list[0].chat.id
+    msg_ids = ",".join(str(m.id) for m in msg_list)
+    cache_key = (chat_id, msg_ids)
+    cached = _zip_listing_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    reader = TelegramSeekableReader(client, msg_list)
     if reader.total_size < 4:
         return []
-        
-    # Check if first part starts with ZIP signature
+
     first_block = await reader.fetch_block(0, 0)
     if not first_block.startswith(b"PK\x03\x04"):
         return []
-        
+
     loop = asyncio.get_running_loop()
-    return await anyio.to_thread.run_sync(list_zip_files_sync, reader, loop)
+    entries = await anyio.to_thread.run_sync(list_zip_files_sync, reader, loop)
+    _zip_listing_cache.set(cache_key, entries)
+    return entries
 
 
 async def get_zip_entry_data_offset(reader: TelegramSeekableReader, header_offset: int) -> int:

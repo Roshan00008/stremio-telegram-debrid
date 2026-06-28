@@ -1,4 +1,3 @@
-import time
 import logging
 import asyncio
 import functools
@@ -12,13 +11,26 @@ from pyrogram.types import Message
 from pyrogram.session.auth import Auth
 from pyrogram.session import Session
 from pyrogram.file_id import FileId, FileType, ThumbnailSource
-from pyrogram.errors import VolumeLocNotFound, CDNFileHashMismatch
+from pyrogram.errors import VolumeLocNotFound, CDNFileHashMismatch, FloodWait
 from pyrogram.crypto import aes
 import pyrogram
+from cache import BoundedTTLCache
 from config import Config
+from services.channels import channel_key, filter_to_allowed
 from utils import parse_split_info
 
 logger = logging.getLogger("tg_client")
+
+SEARCH_CONCURRENCY = 3
+
+
+async def _call_with_flood_wait(coro_factory):
+    while True:
+        try:
+            return await coro_factory()
+        except FloodWait as e:
+            logger.warning(f"FloodWait {e.value}s, retrying...")
+            await asyncio.sleep(e.value + 1)
 
 # Monkey-patch to cache auth keys across media sessions
 _original_auth_create = Auth.create
@@ -268,9 +280,11 @@ class TelegramClientManager:
     def __init__(self):
         self.client = None
         self.is_running = False
-        self._search_cache = {}
-        self._message_cache = {}
-        self._log_cache = {}
+        self._search_cache = BoundedTTLCache(maxsize=200, ttl=Config.CACHE_TTL)
+        self._message_cache = BoundedTTLCache(maxsize=1000, ttl=Config.CACHE_TTL)
+        self._log_cache = BoundedTTLCache(maxsize=500, ttl=900)
+        self._resolved_channels = set()
+        self._channel_info = {}
 
     def initialize(self):
         Config.validate()
@@ -299,22 +313,62 @@ class TelegramClientManager:
             raise ValueError("Neither USER_SESSION_STRING nor BOT_TOKEN is configured!")
 
     def get_channel_ids(self) -> list:
-        val = Config.TELEGRAM_CHANNEL_ID
-        if not val:
-            return []
-        if isinstance(val, int):
-            return [val]
-        parts = [p.strip() for p in str(val).split(",")]
-        ids = []
-        for p in parts:
-            if p.startswith("-") or p.isdigit():
-                try:
-                    ids.append(int(p))
-                except ValueError:
-                    ids.append(p)
+        return Config.get_channel_ids()
+
+    async def _resolve_channel(self, chat_id) -> bool:
+        try:
+            chat = await _call_with_flood_wait(lambda: self.client.get_chat(chat_id))
+            self._resolved_channels.add(chat_id)
+            self._channel_info[channel_key(chat.id)] = {
+                "id": chat.id,
+                "title": chat.title or str(chat.id),
+                "username": chat.username or "",
+            }
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to cache channel {chat_id}: {e}")
+            return False
+
+    async def get_channels_info(self) -> list:
+        if not self.is_running:
+            await self.start()
+        result = []
+        for chat_id in Config.get_channel_ids():
+            key = channel_key(chat_id)
+            if key in self._channel_info:
+                result.append(self._channel_info[key])
+                continue
+            await self._resolve_channel(chat_id)
+            if key in self._channel_info:
+                result.append(self._channel_info[key])
             else:
-                ids.append(p)
-        return ids
+                result.append({"id": chat_id, "title": str(chat_id), "username": ""})
+        return result
+
+    async def check_health(self) -> dict:
+        chat_ids = self.get_channel_ids()
+        if not self.is_running or not self.client:
+            return {
+                "status": "unhealthy",
+                "client_running": False,
+                "channels_configured": len(chat_ids),
+                "channels_resolved": 0,
+            }
+
+        resolved = 0
+        for chat_id in chat_ids:
+            if chat_id in self._resolved_channels:
+                resolved += 1
+            elif await self._resolve_channel(chat_id):
+                resolved += 1
+
+        healthy = resolved > 0
+        return {
+            "status": "healthy" if healthy else "unhealthy",
+            "client_running": True,
+            "channels_configured": len(chat_ids),
+            "channels_resolved": resolved,
+        }
 
     async def start(self):
         if not self.client:
@@ -339,14 +393,13 @@ class TelegramClientManager:
                                 break
                 
                 for chat_id in chat_ids:
-                    try:
-                        await self.client.get_chat(chat_id)
-                    except Exception as e:
-                        logger.warning(f"Failed to cache channel {chat_id}: {e}")
+                    await self._resolve_channel(chat_id)
                         
                 if Config.LOG_CHANNEL_ID:
                     try:
-                        await self.client.get_chat(Config.LOG_CHANNEL_ID)
+                        await _call_with_flood_wait(
+                            lambda: self.client.get_chat(Config.LOG_CHANNEL_ID)
+                        )
                     except Exception as e:
                         logger.warning(f"Failed to cache log channel {Config.LOG_CHANNEL_ID}: {e}")
             except Exception as e:
@@ -368,13 +421,9 @@ class TelegramClientManager:
             return
             
         key = (chat_id, message_id)
-        now = time.time()
-        
-        # Avoid duplicate logs for the same file within 15 mins
-        if key in self._log_cache and now - self._log_cache[key] < 900:
+        if self._log_cache.get(key):
             return
-                
-        self._log_cache[key] = now
+        self._log_cache.set(key, True)
         
         try:
             import datetime
@@ -417,46 +466,77 @@ class TelegramClientManager:
                 f"🆔 **Message ID:** `{message_id}`"
             )
             
-            await self.client.send_message(
-                chat_id=Config.LOG_CHANNEL_ID,
-                text=message_text
+            await _call_with_flood_wait(
+                lambda: self.client.send_message(
+                    chat_id=Config.LOG_CHANNEL_ID,
+                    text=message_text,
+                )
             )
         except Exception as e:
             logger.error(f"Failed to send log to log channel: {e}")
 
-    async def search_messages(self, query: str = "", limit: int = 50):
-        if not self.is_running:
-            await self.start()
-        
-        query_str = str(query).strip() if query else ""
-        
-        cache_key = f"{query_str}:{limit}"
-        now = time.time()
-        if cache_key in self._search_cache:
-            cached_time, cached_results = self._search_cache[cache_key]
-            if now - cached_time < Config.CACHE_TTL:
-                return cached_results
-
-        chat_ids = self.get_channel_ids()
-        results = []
-        per_channel_limit = max(100, limit)
-        
-        for chat_id in chat_ids:
+    async def _search_channel(self, chat_id, query_str: str, per_channel_limit: int) -> list:
+        while True:
             try:
+                results = []
                 if query_str:
-                    async for msg in self.client.search_messages(chat_id=chat_id, query=query_str, limit=per_channel_limit):
+                    async for msg in self.client.search_messages(
+                        chat_id=chat_id, query=query_str, limit=per_channel_limit
+                    ):
                         if self._has_media(msg):
                             results.append(msg)
                 else:
-                    async for msg in self.client.get_chat_history(chat_id=chat_id, limit=per_channel_limit):
+                    async for msg in self.client.get_chat_history(
+                        chat_id=chat_id, limit=per_channel_limit
+                    ):
                         if self._has_media(msg):
                             results.append(msg)
-            except Exception as e:
-                logger.warning(f"Telegram query failed for {chat_id}: {e}")
-        
+                return results
+            except FloodWait as e:
+                logger.warning(f"FloodWait {e.value}s on channel {chat_id}, retrying...")
+                await asyncio.sleep(e.value + 1)
+
+    async def search_messages(
+        self, query: str = "", limit: int = 50, channel_ids=None
+    ):
+        if not self.is_running:
+            await self.start()
+
+        query_str = str(query).strip() if query else ""
+        chat_ids = (
+            filter_to_allowed(channel_ids)
+            if channel_ids is not None
+            else Config.get_active_channel_ids()
+        )
+        if not chat_ids:
+            return []
+
+        cache_key = f"{query_str}:{limit}:{','.join(channel_key(c) for c in chat_ids)}"
+        cached = self._search_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        per_channel_limit = max(100, limit)
+        sem = asyncio.Semaphore(SEARCH_CONCURRENCY)
+
+        async def search_one(chat_id):
+            async with sem:
+                return await self._search_channel(chat_id, query_str, per_channel_limit)
+
+        channel_results = await asyncio.gather(
+            *[search_one(chat_id) for chat_id in chat_ids],
+            return_exceptions=True,
+        )
+
+        results = []
+        for chat_id, result in zip(chat_ids, channel_results):
+            if isinstance(result, Exception):
+                logger.warning(f"Telegram query failed for {chat_id}: {result}")
+            else:
+                results.extend(result)
+
         results.sort(key=lambda m: m.date, reverse=True)
-        
-        # Resolve all split parts for detected split files to prevent missing segments
+
         split_bases = set()
         for msg in results:
             media = msg.video or msg.document or msg.audio
@@ -464,61 +544,84 @@ class TelegramClientManager:
                 fn = getattr(media, "file_name", "") or msg.caption or ""
                 base, part = parse_split_info(fn)
                 if base:
-                    # Generate a clean, truncated search query for the split base
                     search_query = re.sub(r'[^a-zA-Z0-9\s]', ' ', base)
                     search_query = re.sub(r'\s+', ' ', search_query).strip()
                     words = search_query.split()
-                    if words and words[-1].lower() in ('mkv', 'mp4', 'avi', 'mov', 'wmv', 'flv', 'webm', 'ts', 'm4v', 'zip'):
+                    if words and words[-1].lower() in (
+                        'mkv', 'mp4', 'avi', 'mov', 'wmv', 'flv', 'webm', 'ts', 'm4v', 'zip'
+                    ):
                         words = words[:-1]
                     if len(words) > 5:
                         search_query = " ".join(words[:5])
                     else:
                         search_query = " ".join(words)
-                    for chat_id in chat_ids:
-                        split_bases.add((chat_id, search_query))
-                        
+                    for cid in chat_ids:
+                        split_bases.add((cid, search_query))
+
         additional_messages = []
         for chat_id, base in split_bases:
             try:
                 logger.info(f"Fetching all split parts matching base: {base}")
-                async for msg in self.client.search_messages(chat_id=chat_id, query=base, limit=100):
-                    if self._has_media(msg):
-                        additional_messages.append(msg)
+                extra = await self._search_channel(chat_id, base, 100)
+                additional_messages.extend(extra)
             except Exception as e:
                 logger.warning(f"Failed to fetch additional split parts for {base}: {e}")
-                
-        # Merge and deduplicate by message ID
+
         deduped = {msg.id: msg for msg in results}
         for msg in additional_messages:
             deduped[msg.id] = msg
-            
+
         final_results = list(deduped.values())
         final_results.sort(key=lambda m: m.date, reverse=True)
         final_results = final_results[:limit]
-        
-        self._search_cache[cache_key] = (now, final_results)
+
+        self._search_cache.set(cache_key, final_results)
         return final_results
 
     async def get_message(self, message_id: int, chat_id: int = None) -> Message:
+        messages = await self.get_messages_batch([message_id], chat_id=chat_id)
+        if not messages:
+            raise ValueError(f"Message {message_id} not found")
+        return messages[0]
+
+    async def get_messages_batch(
+        self, message_ids: list, chat_id: int = None
+    ) -> list:
+        if not message_ids:
+            return []
         if not self.is_running:
             await self.start()
-            
-        target_chat = chat_id if chat_id is not None else self.get_channel_ids()[0]
-        
-        cache_key = f"{target_chat}:{message_id}"
-        now = time.time()
-        if cache_key in self._message_cache:
-            cached_time, cached_msg = self._message_cache[cache_key]
-            if now - cached_time < Config.CACHE_TTL:
-                return cached_msg
 
-        try:
-            msg = await self.client.get_messages(chat_id=target_chat, message_ids=message_id)
-            self._message_cache[cache_key] = (now, msg)
-            return msg
-        except Exception as e:
-            logger.error(f"Failed to fetch message {message_id} in channel {target_chat}: {e}")
-            raise e
+        target_chat = chat_id if chat_id is not None else self.get_channel_ids()[0]
+        missing_ids = [
+            mid for mid in message_ids
+            if self._message_cache.get(f"{target_chat}:{mid}") is None
+        ]
+
+        if missing_ids:
+            try:
+                fetched = await _call_with_flood_wait(
+                    lambda: self.client.get_messages(
+                        chat_id=target_chat, message_ids=missing_ids
+                    )
+                )
+                if not isinstance(fetched, list):
+                    fetched = [fetched] if fetched else []
+                for msg in fetched:
+                    if msg:
+                        self._message_cache.set(f"{target_chat}:{msg.id}", msg)
+            except Exception as e:
+                logger.error(
+                    f"Failed to fetch messages {missing_ids} in channel {target_chat}: {e}"
+                )
+                raise e
+
+        result = []
+        for mid in message_ids:
+            msg = self._message_cache.get(f"{target_chat}:{mid}")
+            if msg is not None:
+                result.append(msg)
+        return result
 
     def _has_media(self, msg: Message) -> bool:
         return bool(msg.video or msg.document or msg.audio)

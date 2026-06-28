@@ -6,6 +6,23 @@ try:
 except ImportError:
     pass
 
+
+def _parse_channel_ids(raw: str) -> list:
+    if not raw:
+        return []
+    parts = [p.strip() for p in str(raw).split(",") if p.strip()]
+    ids = []
+    for p in parts:
+        if p.startswith("-") or p.isdigit():
+            try:
+                ids.append(int(p))
+            except ValueError:
+                ids.append(p)
+        else:
+            ids.append(p.lstrip("@"))
+    return ids
+
+
 class Config:
     PORT = int(os.getenv("PORT", 7860))
     ADDON_URL = os.getenv("ADDON_URL", f"http://localhost:{PORT}").rstrip("/")
@@ -19,7 +36,36 @@ class Config:
     USER_SESSION_STRING = os.getenv("USER_SESSION_STRING", "")
 
     TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
+    ACTIVE_CHANNEL_IDS = os.getenv("ACTIVE_CHANNEL_IDS", "")
     LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID")
+
+    _parse_channel_ids = staticmethod(_parse_channel_ids)
+
+    @classmethod
+    def get_channel_ids(cls) -> list:
+        if not cls.TELEGRAM_CHANNEL_ID:
+            return []
+        if isinstance(cls.TELEGRAM_CHANNEL_ID, int):
+            return [cls.TELEGRAM_CHANNEL_ID]
+        if isinstance(cls.TELEGRAM_CHANNEL_ID, list):
+            return cls.TELEGRAM_CHANNEL_ID
+        return _parse_channel_ids(cls.TELEGRAM_CHANNEL_ID)
+
+    @classmethod
+    def get_active_channel_ids(cls) -> list:
+        allowed = cls.get_channel_ids()
+        if not cls.ACTIVE_CHANNEL_IDS:
+            return allowed
+        selected = _parse_channel_ids(cls.ACTIVE_CHANNEL_IDS)
+        allowed_map = {
+            (str(c).lstrip("@") if not isinstance(c, int) else str(c)): c for c in allowed
+        }
+        result = []
+        for cid in selected:
+            key = str(cid).lstrip("@") if not isinstance(cid, int) else str(cid)
+            if key in allowed_map:
+                result.append(allowed_map[key])
+        return result if result else allowed
 
     @classmethod
     def validate(cls):
@@ -45,12 +91,11 @@ class Config:
             raise ValueError("API_ID must be a valid integer.")
 
         if cls.TELEGRAM_CHANNEL_ID and isinstance(cls.TELEGRAM_CHANNEL_ID, str):
-            val = cls.TELEGRAM_CHANNEL_ID.strip()
-            if val.startswith("-") or val.isdigit():
-                try:
-                    cls.TELEGRAM_CHANNEL_ID = int(val)
-                except ValueError:
-                    pass
+            parsed = _parse_channel_ids(cls.TELEGRAM_CHANNEL_ID)
+            if len(parsed) == 1:
+                cls.TELEGRAM_CHANNEL_ID = parsed[0]
+            elif parsed:
+                cls.TELEGRAM_CHANNEL_ID = parsed
 
         if cls.LOG_CHANNEL_ID and isinstance(cls.LOG_CHANNEL_ID, str):
             val = cls.LOG_CHANNEL_ID.strip()

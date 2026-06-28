@@ -3,6 +3,9 @@ import logging
 import unicodedata
 import httpx
 
+from cache import BoundedTTLCache
+from config import Config
+
 logger = logging.getLogger("utils")
 
 def format_size(bytes_size: int) -> str:
@@ -188,15 +191,24 @@ def parse_split_info(filename: str) -> tuple:
         if ext:
             base += f".{ext}"
         return base, part
+
+    # Match _part_N before extension (e.g. Video_part_1.mp4)
+    m3 = re.search(r'[._\- ]part_(\d+)(\.[^.]+)$', filename, re.IGNORECASE)
+    if m3:
+        part = int(m3.group(1))
+        ext = m3.group(2)
+        base = filename[:m3.start()] + ext
+        return base, part
         
     return None, None
 
-_metadata_cache = {}
+_metadata_cache = BoundedTTLCache(maxsize=200, ttl=Config.CACHE_TTL)
 
 async def get_metadata_from_cinemeta(meta_type: str, imdb_id: str) -> dict:
     cache_key = f"{meta_type}:{imdb_id}"
-    if cache_key in _metadata_cache:
-        return _metadata_cache[cache_key]
+    cached = _metadata_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     url = f"https://v3-cinemeta.strem.io/meta/{meta_type}/{imdb_id}.json"
     logger.info(f"Fetching metadata from Cinemeta: {url}")
@@ -214,7 +226,7 @@ async def get_metadata_from_cinemeta(meta_type: str, imdb_id: str) -> dict:
                         "genres": meta.get("genres", []),
                         "poster": meta.get("poster")
                     }
-                    _metadata_cache[cache_key] = result
+                    _metadata_cache.set(cache_key, result)
                     return result
     except Exception as e:
         logger.error(f"Cinemeta metadata lookup failed: {e}")

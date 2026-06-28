@@ -39,10 +39,30 @@ class Config:
     ACTIVE_CHANNEL_IDS = os.getenv("ACTIVE_CHANNEL_IDS", "")
     LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID")
 
+    CHANNEL_STORE_PATH = os.getenv("CHANNEL_STORE_PATH", "data/channels.json")
+    MANAGER_BOT_TOKEN = os.getenv("MANAGER_BOT_TOKEN", "")
+    MANAGER_USER_IDS = os.getenv("MANAGER_USER_IDS", "")
+
     _parse_channel_ids = staticmethod(_parse_channel_ids)
 
     @classmethod
+    def get_manager_user_ids(cls) -> list:
+        if not cls.MANAGER_USER_IDS:
+            return []
+        result = []
+        for part in str(cls.MANAGER_USER_IDS).split(","):
+            part = part.strip()
+            if part.isdigit():
+                result.append(int(part))
+        return result
+
+    @classmethod
     def get_channel_ids(cls) -> list:
+        from services.channel_store import channel_store
+        channel_store.ensure_initialized()
+        ids = channel_store.get_configured_ids()
+        if ids:
+            return ids
         if not cls.TELEGRAM_CHANNEL_ID:
             return []
         if isinstance(cls.TELEGRAM_CHANNEL_ID, int):
@@ -53,6 +73,10 @@ class Config:
 
     @classmethod
     def get_active_channel_ids(cls) -> list:
+        from services.channel_store import channel_store
+        channel_store.ensure_initialized()
+        if channel_store.get_configured_ids():
+            return channel_store.get_active_ids()
         allowed = cls.get_channel_ids()
         if not cls.ACTIVE_CHANNEL_IDS:
             return allowed
@@ -76,8 +100,12 @@ class Config:
             missing.append("API_HASH")
         if not cls.BOT_TOKEN and not cls.USER_SESSION_STRING:
             missing.append("BOT_TOKEN or USER_SESSION_STRING")
-        if not cls.TELEGRAM_CHANNEL_ID:
-            missing.append("TELEGRAM_CHANNEL_ID")
+
+        from services.channel_store import channel_store
+        channel_store.ensure_initialized()
+        has_channels = bool(channel_store.get_configured_ids())
+        if not has_channels and not cls.TELEGRAM_CHANNEL_ID:
+            missing.append("TELEGRAM_CHANNEL_ID (or add channels later via /admin)")
 
         if missing:
             raise ValueError(

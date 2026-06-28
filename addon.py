@@ -13,7 +13,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import Config
-from routers import catalog, channels, health, manifest, meta, pages, proxy, stream, subtitles
+from routers import admin, catalog, channels, health, manifest, meta, pages, proxy, stream, subtitles
+from services.manager_bot import start_manager_bot, stop_manager_bot
+from services.channel_store import channel_store
 from tg_client import tg_client_manager
 
 logging.basicConfig(
@@ -34,9 +36,12 @@ async def lifespan(app: FastAPI):
         print("=" * 60 + "\n")
 
         Config.validate()
+        channel_store.ensure_initialized()
         await tg_client_manager.start()
+        await start_manager_bot()
         yield
     finally:
+        await stop_manager_bot()
         await tg_client_manager.stop()
 
 
@@ -51,6 +56,7 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
+app.include_router(admin.router)
 app.include_router(channels.router)
 app.include_router(pages.router)
 app.include_router(manifest.router)

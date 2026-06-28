@@ -332,6 +332,25 @@ class TelegramClientManager:
     async def get_channels_info(self) -> list:
         if not self.is_running:
             await self.start()
+        from services.channel_store import channel_store
+        channel_store.ensure_initialized()
+        stored = channel_store.list_channels()
+        if stored:
+            result = []
+            for ch in stored:
+                key = channel_key(ch["id"])
+                if key in self._channel_info:
+                    info = dict(self._channel_info[key])
+                else:
+                    await self._resolve_channel(ch["id"])
+                    info = dict(self._channel_info.get(key, {
+                        "id": ch["id"],
+                        "title": ch.get("title", str(ch["id"])),
+                        "username": ch.get("username", ""),
+                    }))
+                info["active"] = ch.get("active", True)
+                result.append(info)
+            return result
         result = []
         for chat_id in Config.get_channel_ids():
             key = channel_key(chat_id)

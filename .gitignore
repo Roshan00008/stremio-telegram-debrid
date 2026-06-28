@@ -127,6 +127,10 @@ venv.bak/
 *.session
 *.session-journal
 
+# Runtime channel configuration (managed via /admin)
+data/channels.json
+data/
+
 # Spyder project settings
 .spyderproject
 .spyder-py3

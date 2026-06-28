@@ -35,6 +35,11 @@ async def landing(request: Request):
                 </div>
         """
 
+    admin_link = ""
+    if Config.API_KEY:
+        admin_url = f"{Config.ADDON_URL}/admin?api_key={urllib.parse.quote(api_key or '')}"
+        admin_link = f' | <a href="{markupsafe.escape(admin_url)}">Manage Channels</a>'
+
     channel_section = ""
     configured = Config.get_channel_ids()
     if len(configured) > 1:
@@ -529,7 +534,7 @@ async def landing(request: Request):
                 </div>
                 
                 <div class="footer">
-                    Developed by <a href="https://github.com/SunilRoy-dev" target="_blank">SunilRoy-dev</a> | Licensed under MIT-NC
+                    Developed by <a href="https://github.com/SunilRoy-dev" target="_blank">SunilRoy-dev</a> | Licensed under MIT-NC{admin_link}
                     <em>For educational and personal testing only. Do not use for unauthorized hosting or distribution of copyrighted media.</em>
                 </div>
             </div>

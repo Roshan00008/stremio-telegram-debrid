@@ -13,6 +13,10 @@ def channel_key(channel_id: Union[int, str]) -> str:
 
 
 def _allowed_channel_map() -> dict:
+    from services.channel_store import channel_store
+    channel_store.ensure_initialized()
+    if channel_store.get_configured_ids():
+        return {channel_key(ch["id"]): ch["id"] for ch in channel_store.list_channels()}
     return {channel_key(cid): cid for cid in Config.get_channel_ids()}
 
 
